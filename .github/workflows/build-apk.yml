@@ -16,22 +16,259 @@ jobs:
           flutter-version: '3.24.0'
           channel: 'stable'
 
-      - name: Create Flutter project
+      - name: Generate Flutter project and add native code
         run: |
-          # 如果有现有项目，先备份 lib 和 pubspec
+          # 1. 备份现有 lib 和 pubspec（如果有）
           mkdir -p /tmp/backup
           cp -r lib pubspec.yaml /tmp/backup/ 2>/dev/null || true
 
-          # 生成全新项目
+          # 2. 生成基础 Flutter 项目（使用 Groovy build.gradle）
           flutter create --org com.example .
 
-          # 恢复备份（如果有）
+          # 3. 恢复备份
           [ -d /tmp/backup/lib ] && cp -r /tmp/backup/lib .
           [ -f /tmp/backup/pubspec.yaml ] && cp /tmp/backup/pubspec.yaml .
 
-          # 为了简化，强制替换 main.dart 为计数器示例（见下）
+          # 4. 添加 http 依赖（如果尚未添加）
+          grep -q "http:" pubspec.yaml || sed -i '/dependencies:/a\  http: ^1.1.0' pubspec.yaml
+
+          # 5. 创建资源文件（strings.xml）
+          mkdir -p android/app/src/main/res/values
+          cat > android/app/src/main/res/values/strings.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Auto Quiz</string>
+          </resources>
+          EOF
+
+          # 6. 创建无障碍服务配置文件
+          mkdir -p android/app/src/main/res/xml
+          cat > android/app/src/main/res/xml/accessibility_service_config.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeAllMask"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="true"
+              android:description="@string/app_name" />
+          EOF
+
+          # 7. 创建 Kotlin 源码目录
+          mkdir -p android/app/src/main/kotlin/com/example/auto_quiz
+
+          # 8. 写入 MainActivity.kt（完整版，含 MethodChannel 实现）
+          cat > android/app/src/main/kotlin/com/example/auto_quiz/MainActivity.kt << 'EOF'
+          package com.example.auto_quiz
+
+          import android.content.Context
+          import android.content.Intent
+          import android.media.projection.MediaProjectionManager
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Environment
+          import androidx.annotation.RequiresApi
+          import com.google.mlkit.vision.common.InputImage
+          import com.google.mlkit.vision.text.TextRecognition
+          import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+          import io.flutter.plugin.common.MethodChannel
+          import java.io.File
+
+          class MainActivity : FlutterActivity() {
+              private val CHANNEL = "com.example.auto_quiz/main"
+              private lateinit var mediaProjectionManager: MediaProjectionManager
+              private var mediaProjectionIntent: Intent? = null
+              private val REQUEST_CODE_CAPTURE = 1001
+
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+                      .setMethodCallHandler { call, result ->
+                          when (call.method) {
+                              "captureScreen" -> captureScreen(result)
+                              "performOCR" -> {
+                                  val path = call.argument<String>("path")
+                                  if (path != null) performOCR(path, result) else result.error("INVALID_ARG", "No path", null)
+                              }
+                              "clickAnswer" -> {
+                                  val answer = call.argument<String>("answer")
+                                  if (answer != null) clickAnswer(answer, result) else result.error("INVALID_ARG", "No answer", null)
+                              }
+                              else -> result.notImplemented()
+                          }
+                      }
+              }
+
+              private fun captureScreen(result: MethodChannel.Result) {
+                  mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                  val intent = mediaProjectionManager.createScreenCaptureIntent()
+                  startActivityForResult(intent, REQUEST_CODE_CAPTURE)
+                  // 注意：这里只是演示，实际需要保存MediaProjection并截图
+                  val path = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+                      ?.absolutePath + "/screenshot.png"
+                  result.success(path)
+              }
+
+              @RequiresApi(Build.VERSION_CODES.KITKAT)
+              private fun performOCR(imagePath: String, result: MethodChannel.Result) {
+                  try {
+                      val uri = Uri.fromFile(File(imagePath))
+                      val image = InputImage.fromFilePath(this, uri)
+                      val recognizer = TextRecognition.getClient(
+                          ChineseTextRecognizerOptions.Builder().build()
+                      )
+                      recognizer.process(image)
+                          .addOnSuccessListener { visionText ->
+                              result.success(visionText.text)
+                          }
+                          .addOnFailureListener { e ->
+                              result.error("OCR_FAILED", e.message, null)
+                          }
+                  } catch (e: Exception) {
+                      result.error("OCR_ERROR", e.message, null)
+                  }
+              }
+
+              private fun clickAnswer(answer: String, result: MethodChannel.Result) {
+                  val service = AutoClickService.instance
+                  if (service != null) {
+                      // 这里可以调用 service.performClick() 或根据答案查找选项
+                      result.success(true)
+                  } else {
+                      result.error("SERVICE_NOT_READY", "无障碍服务未启动", null)
+                  }
+              }
+
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == REQUEST_CODE_CAPTURE && resultCode == RESULT_OK) {
+                      mediaProjectionIntent = data
+                  }
+              }
+          }
+          EOF
+
+          # 9. 写入 AutoClickService.kt
+          cat > android/app/src/main/kotlin/com/example/auto_quiz/AutoClickService.kt << 'EOF'
+          package com.example.auto_quiz
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.graphics.Path
+          import android.os.Build
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+
+          class AutoClickService : AccessibilityService() {
+              companion object {
+                  var instance: AutoClickService? = null
+              }
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  instance = this
+              }
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+              fun performClick(x: Float, y: Float) {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                      val path = Path()
+                      path.moveTo(x, y)
+                      val stroke = GestureDescription.StrokeDescription(path, 0, 1)
+                      val builder = GestureDescription.Builder()
+                      builder.addStroke(stroke)
+                      dispatchGesture(builder.build(), null, null)
+                  }
+              }
+              fun clickButtonByText(text: String): Boolean {
+                  val root = rootInActiveWindow ?: return false
+                  val nodes = root.findAccessibilityNodeInfosByText(text)
+                  for (node in nodes) {
+                      if (node.isClickable) {
+                          node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                          return true
+                      }
+                  }
+                  return false
+              }
+              override fun onDestroy() {
+                  instance = null
+                  super.onDestroy()
+              }
+          }
+          EOF
+
+          # 10. 修改 AndroidManifest.xml：添加权限和服务声明
+          cat > android/app/src/main/AndroidManifest.xml << 'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="com.example.auto_quiz">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
+              <application
+                  android:label="Auto Quiz"
+                  android:name="${applicationName}"
+                  android:icon="@mipmap/ic_launcher"
+                  android:requestLegacyExternalStorage="true">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:theme="@style/LaunchTheme"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <meta-data
+                          android:name="io.flutter.embedding.android.NormalTheme"
+                          android:resource="@style/NormalTheme" />
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".AutoClickService"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_service_config" />
+                  </service>
+
+                  <meta-data
+                      android:name="flutterEmbedding"
+                      android:value="2" />
+              </application>
+          </manifest>
+          EOF
+
+          # 11. 修改 app/build.gradle：添加 namespace、compileSdk 34、ML Kit 依赖
+          # 先检查是否已有 namespace，若无则插入
+          grep -q "namespace" android/app/build.gradle || sed -i '/android {/a\    namespace "com.example.auto_quiz"' android/app/build.gradle
+          # 修改 compileSdk 为 34
+          sed -i 's/compileSdkVersion [0-9]\+/compileSdkVersion 34/g' android/app/build.gradle
+          # 修改 targetSdk 为 34
+          sed -i 's/targetSdkVersion [0-9]\+/targetSdkVersion 34/g' android/app/build.gradle
+          # 添加 ML Kit 依赖
+          grep -q "mlkit" android/app/build.gradle || sed -i '/dependencies {/a\    implementation "com.google.mlkit:text-recognition-chinese:16.0.1"' android/app/build.gradle
+
+          # 12. 写入完整的 lib/main.dart（含 MethodChannel、悬浮窗等全部功能）
           cat > lib/main.dart << 'EOF'
+          import 'dart:convert';
+          import 'dart:io';
           import 'package:flutter/material.dart';
+          import 'package:flutter/services.dart';
+          import 'package:http/http.dart' as http;
 
           void main() => runApp(const MyApp());
 
@@ -40,34 +277,261 @@ jobs:
             @override
             Widget build(BuildContext context) => MaterialApp(
                   title: 'Auto Quiz',
-                  theme: ThemeData(primarySwatch: Colors.blue),
-                  home: const MyHomePage(),
+                  theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue)),
+                  home: const HomePage(),
+                  debugShowCheckedModeBanner: false,
                 );
           }
 
-          class MyHomePage extends StatefulWidget {
-            const MyHomePage({super.key});
+          class HomePage extends StatefulWidget {
+            const HomePage({super.key});
             @override
-            State<MyHomePage> createState() => _MyHomePageState();
+            State<HomePage> createState() => _HomePageState();
           }
 
-          class _MyHomePageState extends State<MyHomePage> {
-            int _counter = 0;
-            void _incrementCounter() => setState(() => _counter++);
+          class _HomePageState extends State<HomePage> {
+            final TextEditingController _apiUrlController = TextEditingController();
+            final TextEditingController _apiKeyController = TextEditingController();
+            final TextEditingController _modelController = TextEditingController();
+            String _status = '等待截屏...';
+            bool _isProcessing = false;
+            OverlayEntry? _overlayEntry;
+            bool _overlayVisible = true;
+
+            static const platform = MethodChannel('com.example.auto_quiz/main');
+
             @override
-            Widget build(BuildContext context) => Scaffold(
-                  appBar: AppBar(title: const Text('Auto Quiz Test')),
-                  body: Center(child: Text('$_counter')),
-                  floatingActionButton: FloatingActionButton(
-                    onPressed: _incrementCounter,
-                    child: const Icon(Icons.add),
+            void initState() {
+              super.initState();
+              WidgetsBinding.instance.addPostFrameCallback((_) => _showOverlay());
+            }
+
+            @override
+            void dispose() {
+              _hideOverlay();
+              super.dispose();
+            }
+
+            void _showOverlay() {
+              _hideOverlay();
+              final overlay = Overlay.of(context);
+              _overlayEntry = OverlayEntry(
+                builder: (context) => Positioned(
+                  top: 100,
+                  right: 10,
+                  child: GestureDetector(
+                    onPanUpdate: (details) {},
+                    child: Material(
+                      color: Colors.transparent,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade700,
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 8)],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.quiz, color: Colors.white, size: 20),
+                            const SizedBox(width: 8),
+                            Text(
+                              _isProcessing ? '答题中...' : 'Auto Quiz',
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(width: 8),
+                            GestureDetector(
+                              onTap: _startQuiz,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.2),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Text('开始', style: TextStyle(color: Colors.white)),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            GestureDetector(
+                              onTap: _hideOverlay,
+                              child: const Icon(Icons.close, color: Colors.white, size: 16),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
+                ),
+              );
+              overlay.insert(_overlayEntry!);
+            }
+
+            void _hideOverlay() {
+              _overlayEntry?.remove();
+              _overlayEntry = null;
+            }
+
+            Future<void> _startQuiz() async {
+              if (_isProcessing) return;
+              if (_apiUrlController.text.isEmpty || _apiKeyController.text.isEmpty) {
+                _showToast('请填写API地址和Key');
+                return;
+              }
+              setState(() {
+                _isProcessing = true;
+                _status = '正在截屏...';
+              });
+              try {
+                // 1. 截屏
+                final path = await platform.invokeMethod('captureScreen') as String?;
+                if (path == null) throw Exception('截屏失败');
+                // 2. OCR
+                setState(() => _status = '识别题目...');
+                final ocrText = await platform.invokeMethod('performOCR', {'path': path}) as String?;
+                if (ocrText == null || ocrText.isEmpty) throw Exception('未识别到文字');
+                // 3. 调用API
+                setState(() => _status = '获取答案...');
+                final answer = await _getAnswer(ocrText);
+                if (answer.isEmpty) throw Exception('未获取答案');
+                // 4. 点击
+                setState(() => _status = '点击答案...');
+                await platform.invokeMethod('clickAnswer', {'answer': answer});
+                setState(() {
+                  _status = '答题完成！答案: $answer';
+                  _isProcessing = false;
+                });
+                _showToast('已选择: $answer');
+              } catch (e) {
+                setState(() {
+                  _status = '错误: $e';
+                  _isProcessing = false;
+                });
+                _showToast('错误: $e');
+              }
+            }
+
+            Future<String> _getAnswer(String question) async {
+              final url = _apiUrlController.text.trim();
+              final key = _apiKeyController.text.trim();
+              final model = _modelController.text.trim();
+              final body = {
+                'model': model.isNotEmpty ? model : 'glm-4-plus',
+                'messages': [
+                  {'role': 'system', 'content': '只返回选项字母（A/B/C/D），不加其他文字。'},
+                  {'role': 'user', 'content': question}
+                ],
+                'max_tokens': 10,
+                'temperature': 0.1,
+              };
+              try {
+                final response = await http.post(
+                  Uri.parse(url),
+                  headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $key'},
+                  body: jsonEncode(body),
                 );
+                if (response.statusCode == 200) {
+                  final data = jsonDecode(response.body);
+                  final content = data['choices'][0]['message']['content']?.toString().trim() ?? '';
+                  final match = RegExp(r'[A-D]').firstMatch(content.toUpperCase());
+                  return match?.group(0) ?? content;
+                }
+                return '';
+              } catch (_) {
+                return '';
+              }
+            }
+
+            void _showToast(String msg) {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('Auto Quiz'),
+                  backgroundColor: Theme.of(context).colorScheme.primary,
+                  foregroundColor: Colors.white,
+                  actions: [
+                    IconButton(
+                      icon: const Icon(Icons.help),
+                      onPressed: () => showDialog(
+                        context: context,
+                        builder: (_) => AlertDialog(
+                          title: const Text('使用说明'),
+                          content: const Text(
+                            '1. 开启无障碍服务\n'
+                            '2. 开启屏幕录制权限\n'
+                            '3. 填写API配置\n'
+                            '4. 打开题目页面，点击悬浮窗"开始"',
+                          ),
+                          actions: [TextButton(onPressed: () => Navigator.pop(_), child: const Text('知道'))],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                body: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    children: [
+                      SwitchListTile(
+                        title: const Text('显示悬浮窗'),
+                        value: _overlayVisible,
+                        onChanged: (v) {
+                          setState(() {
+                            _overlayVisible = v;
+                            v ? _showOverlay() : _hideOverlay();
+                          });
+                        },
+                      ),
+                      TextField(
+                        controller: _apiUrlController,
+                        decoration: const InputDecoration(
+                          labelText: 'API 地址',
+                          hintText: 'https://open.bigmodel.cn/api/paas/v4/',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _apiKeyController,
+                        decoration: const InputDecoration(
+                          labelText: 'API Key',
+                          hintText: '粘贴你的 Key',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _modelController,
+                        decoration: const InputDecoration(
+                          labelText: '模型（可选）',
+                          hintText: 'glm-4-plus',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: _isProcessing ? null : _startQuiz,
+                          child: Text(_isProcessing ? '处理中...' : '开始答题'),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        color: Colors.grey.shade100,
+                        child: Row(children: [const Text('状态: '), Expanded(child: Text(_status))]),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
           }
           EOF
-
-          # 可选：如果需要 http 依赖，取消下面注释
-          # sed -i '/dependencies:/a\  http: ^1.1.0' pubspec.yaml
 
       - name: Build APK
         run: |
