@@ -16,6 +16,20 @@ jobs:
           flutter-version: '3.24.0'
           channel: 'stable'
       
+      # ⭐ 关键：重新生成完整的 Flutter 项目结构（包括 android/）
+      - name: Regenerate Flutter project
+        run: |
+          # 备份核心文件
+          mkdir -p /tmp/backup
+          cp -r lib pubspec.yaml /tmp/backup/
+          
+          # 重新创建项目
+          flutter create --org com.example .
+          
+          # 恢复核心文件
+          cp -r /tmp/backup/lib .
+          cp /tmp/backup/pubspec.yaml .
+      
       - run: flutter pub get
       
       - run: flutter build apk --debug
