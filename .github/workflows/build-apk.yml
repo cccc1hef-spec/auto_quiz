@@ -543,11 +543,15 @@ jobs:
           }
           EOF
       
+      - name: Add http dependency
+        run: |
+          sed -i '/dependencies:/a\  http: ^1.1.0' pubspec.yaml
+
       - name: Update dependencies and build
         run: |
           flutter pub get
           flutter build apk --debug
-      
+
       - uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
