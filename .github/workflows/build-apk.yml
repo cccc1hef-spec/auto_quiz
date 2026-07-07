@@ -24,10 +24,105 @@ jobs:
           cp -r /tmp/backup/lib .
           cp /tmp/backup/pubspec.yaml .
       
-      # ⭐ 新增：修改应用显示名称（在生成 Android 项目后、构建前）
-      - name: Change app name
+      # ⭐ 添加缺失的无障碍服务文件
+      - name: Add accessibility service files
         run: |
+          # 创建 res/xml 目录
+          mkdir -p android/app/src/main/res/xml
+          
+          # 写入 accessibility_service_config.xml
+          cat > android/app/src/main/res/xml/accessibility_service_config.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeAllMask"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="true"
+              android:description="@string/app_name" />
+          EOF
+          
+          # 创建 kotlin 源码目录
+          mkdir -p android/app/src/main/kotlin/com/example/auto_quiz
+          
+          # 写入 AutoClickService.kt
+          cat > android/app/src/main/kotlin/com/example/auto_quiz/AutoClickService.kt << 'EOF'
+          package com.example.auto_quiz
+          
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.graphics.Path
+          import android.os.Build
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+          
+          class AutoClickService : AccessibilityService() {
+          
+              companion object {
+                  var instance: AutoClickService? = null
+              }
+          
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  instance = this
+              }
+          
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+          
+              override fun onInterrupt() {}
+          
+              fun performClick(x: Float, y: Float) {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                      val path = Path()
+                      path.moveTo(x, y)
+                      val stroke = GestureDescription.StrokeDescription(path, 0, 1)
+                      val builder = GestureDescription.Builder()
+                      builder.addStroke(stroke)
+                      dispatchGesture(builder.build(), null, null)
+                  }
+              }
+          
+              fun clickButtonByText(text: String): Boolean {
+                  val root = rootInActiveWindow ?: return false
+                  val nodes = root.findAccessibilityNodeInfosByText(text)
+                  for (node in nodes) {
+                      if (node.isClickable) {
+                          node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                          return true
+                      }
+                  }
+                  return false
+              }
+          
+              override fun onDestroy() {
+                  instance = null
+                  super.onDestroy()
+              }
+          }
+          EOF
+      
+      # ⭐ 修改 AndroidManifest.xml 添加服务注册和应用名称
+      - name: Update AndroidManifest
+        run: |
+          # 插入权限
+          sed -i '/<application/a\    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />\n    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
+          
+          # 修改应用名称
           sed -i 's/android:label="auto_quiz"/android:label="Auto Quiz"/g' android/app/src/main/AndroidManifest.xml
+          
+          # 在 application 内部添加 service 注册（在 activity 后面）
+          sed -i '/<\/activity>/a\
+          \n        <service\
+              android:name=".AutoClickService"\
+              android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"\
+              android:exported="true">\
+              <intent-filter>\
+                  <action android:name="android.accessibilityservice.AccessibilityService" />\
+              </intent-filter>\
+              <meta-data\
+                  android:name="android.accessibilityservice"\
+                  android:resource="@xml/accessibility_service_config" />\
+          </service>' android/app/src/main/AndroidManifest.xml
       
       - run: flutter pub get
       
