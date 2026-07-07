@@ -22,7 +22,7 @@ jobs:
           mkdir -p /tmp/backup
           cp -r lib pubspec.yaml /tmp/backup/ 2>/dev/null || true
           
-          # 2. 生成基础 Flutter 项目
+          # 2. 生成基础 Flutter 项目（默认使用 Groovy build.gradle）
           flutter create --org com.example .
           
           # 3. 恢复备份（如果有）
@@ -515,16 +515,18 @@ jobs:
       
       - name: Add http dependency to pubspec.yaml
         run: |
-          # 使用 sed 在 dependencies: 后添加 http 依赖
           sed -i '/dependencies:/a\  http: ^1.1.0' pubspec.yaml
       
-      - name: Add ML Kit dependency to build.gradle.kts
+      - name: Add ML Kit dependency to build.gradle (auto-detect .gradle or .kts)
         run: |
-          # 确保 build.gradle.kts 存在，然后追加依赖
-          if [ -f android/app/build.gradle.kts ]; then
+          if [ -f android/app/build.gradle ]; then
+            echo "Found build.gradle (Groovy), inserting ML Kit dependency..."
+            sed -i '/dependencies {/a\    implementation "com.google.mlkit:text-recognition-chinese:16.0.1"' android/app/build.gradle
+          elif [ -f android/app/build.gradle.kts ]; then
+            echo "Found build.gradle.kts (Kotlin), inserting ML Kit dependency..."
             sed -i '/dependencies {/a\    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")' android/app/build.gradle.kts
           else
-            echo "ERROR: android/app/build.gradle.kts not found"
+            echo "ERROR: Neither build.gradle nor build.gradle.kts found!"
             exit 1
           fi
       
