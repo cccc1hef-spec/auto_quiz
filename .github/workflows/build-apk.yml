@@ -18,18 +18,18 @@ jobs:
       
       - name: Generate full Flutter project and native files
         run: |
-          # 1. 备份现有 lib 和 pubspec（如果有）
+          # 备份现有 lib 和 pubspec
           mkdir -p /tmp/backup
           cp -r lib pubspec.yaml /tmp/backup/ 2>/dev/null || true
           
-          # 2. 生成基础 Flutter 项目（使用 Groovy build.gradle）
+          # 生成基础 Flutter 项目（使用 Groovy build.gradle）
           flutter create --org com.example .
           
-          # 3. 恢复备份（如果有）
+          # 恢复备份
           [ -d /tmp/backup/lib ] && cp -r /tmp/backup/lib .
           [ -f /tmp/backup/pubspec.yaml ] && cp /tmp/backup/pubspec.yaml .
           
-          # 4. 创建资源文件（strings.xml）
+          # 创建资源文件
           mkdir -p android/app/src/main/res/values
           cat > android/app/src/main/res/values/strings.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -38,7 +38,6 @@ jobs:
           </resources>
           EOF
           
-          # 5. 创建 accessibility_service_config.xml
           mkdir -p android/app/src/main/res/xml
           cat > android/app/src/main/res/xml/accessibility_service_config.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -51,10 +50,10 @@ jobs:
               android:description="@string/app_name" />
           EOF
           
-          # 6. 创建 Kotlin 源码目录
+          # 创建 Kotlin 源码目录
           mkdir -p android/app/src/main/kotlin/com/example/auto_quiz
           
-          # 7. 写入 MainActivity.kt
+          # 写入 MainActivity.kt
           cat > android/app/src/main/kotlin/com/example/auto_quiz/MainActivity.kt << 'EOF'
           package com.example.auto_quiz
           
@@ -146,7 +145,7 @@ jobs:
           }
           EOF
           
-          # 8. 写入 AutoClickService.kt
+          # 写入 AutoClickService.kt
           cat > android/app/src/main/kotlin/com/example/auto_quiz/AutoClickService.kt << 'EOF'
           package com.example.auto_quiz
           
@@ -195,7 +194,7 @@ jobs:
           }
           EOF
           
-          # 9. 写入 AndroidManifest.xml
+          # 写入 AndroidManifest.xml
           cat > android/app/src/main/AndroidManifest.xml << 'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
@@ -246,7 +245,7 @@ jobs:
           </manifest>
           EOF
           
-          # 10. 写入 lib/main.dart
+          # 写入 lib/main.dart
           cat > lib/main.dart << 'EOF'
           import 'dart:convert';
           import 'dart:io';
@@ -517,24 +516,69 @@ jobs:
         run: |
           sed -i '/dependencies:/a\  http: ^1.1.0' pubspec.yaml
       
-      - name: Add ML Kit dependency to build.gradle (with verification)
+      - name: Override app/build.gradle with full ML Kit support
         run: |
-          # 先显示原始 build.gradle 内容
-          echo "=== Original build.gradle ==="
-          cat android/app/build.gradle || echo "File not found"
+          cat > android/app/build.gradle << 'EOF'
+          def localProperties = new Properties()
+          def localPropertiesFile = rootProject.file('local.properties')
+          if (localPropertiesFile.exists()) {
+              localPropertiesFile.withReader('UTF-8') { reader ->
+                  localProperties.load(reader)
+              }
+          }
+          def flutterRoot = localProperties.getProperty('flutter.sdk')
+          if (flutterRoot == null) {
+              throw new GradleException("Flutter SDK not found. Define location with flutter.sdk in the local.properties file.")
+          }
+          def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
+          if (flutterVersionCode == null) {
+              flutterVersionCode = '1'
+          }
+          def flutterVersionName = localProperties.getProperty('flutter.versionName')
+          if (flutterVersionName == null) {
+              flutterVersionName = '1.0'
+          }
           
-          # 检查文件是否存在
-          if [ ! -f android/app/build.gradle ]; then
-            echo "ERROR: android/app/build.gradle not found!"
-            exit 1
-          fi
+          apply plugin: 'com.android.application'
+          apply plugin: 'kotlin-android'
+          apply from: "$flutterRoot/packages/flutter_tools/gradle/flutter.gradle"
           
-          # 使用 sed 在 dependencies 块内插入，并确保有换行
-          sed -i '/dependencies {/a\    implementation "com.google.mlkit:text-recognition-chinese:16.0.1"' android/app/build.gradle
+          android {
+              compileSdkVersion 34
+              ndkVersion flutter.ndkVersion
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+              kotlinOptions {
+                  jvmTarget = '1.8'
+              }
+              sourceSets {
+                  main.java.srcDirs += 'src/main/kotlin'
+              }
+              defaultConfig {
+                  applicationId "com.example.auto_quiz"
+                  minSdkVersion 21
+                  targetSdkVersion 34
+                  versionCode flutterVersionCode.toInteger()
+                  versionName flutterVersionName
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.debug
+                  }
+              }
+          }
           
-          # 再次打印确认插入结果
-          echo "=== Modified build.gradle ==="
-          cat android/app/build.gradle
+          flutter {
+              source '../..'
+          }
+          
+          dependencies {
+              implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
+              implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+          }
+          EOF
       
       - name: Update dependencies and build
         run: |
