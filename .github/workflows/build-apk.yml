@@ -16,7 +16,7 @@ jobs:
           flutter-version: '3.24.0'
           channel: 'stable'
       
-      - name: Generate full Flutter project with all native code
+      - name: Generate full Flutter project and native files
         run: |
           # 1. 备份现有 lib 和 pubspec（如果有）
           mkdir -p /tmp/backup
@@ -29,7 +29,7 @@ jobs:
           [ -d /tmp/backup/lib ] && cp -r /tmp/backup/lib .
           [ -f /tmp/backup/pubspec.yaml ] && cp /tmp/backup/pubspec.yaml .
           
-          # 4. 创建资源文件
+          # 4. 创建资源文件（strings.xml）
           mkdir -p android/app/src/main/res/values
           cat > android/app/src/main/res/values/strings.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -38,6 +38,7 @@ jobs:
           </resources>
           EOF
           
+          # 5. 创建 accessibility_service_config.xml
           mkdir -p android/app/src/main/res/xml
           cat > android/app/src/main/res/xml/accessibility_service_config.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -50,10 +51,10 @@ jobs:
               android:description="@string/app_name" />
           EOF
           
-          # 5. 创建 Kotlin 源码目录
+          # 6. 创建 Kotlin 源码目录
           mkdir -p android/app/src/main/kotlin/com/example/auto_quiz
           
-          # 6. 写入 MainActivity.kt（修正：使用 Uri.fromFile，导入 android.net.Uri）
+          # 7. 写入 MainActivity.kt
           cat > android/app/src/main/kotlin/com/example/auto_quiz/MainActivity.kt << 'EOF'
           package com.example.auto_quiz
           
@@ -64,7 +65,6 @@ jobs:
           import android.os.Build
           import android.os.Bundle
           import android.os.Environment
-          import android.util.Log
           import androidx.annotation.RequiresApi
           import com.google.mlkit.vision.common.InputImage
           import com.google.mlkit.vision.text.TextRecognition
@@ -103,7 +103,6 @@ jobs:
                   mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                   val intent = mediaProjectionManager.createScreenCaptureIntent()
                   startActivityForResult(intent, REQUEST_CODE_CAPTURE)
-                  // 暂存占位路径（实际需要完整截图实现）
                   val path = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
                       ?.absolutePath + "/screenshot.png"
                   result.success(path)
@@ -132,7 +131,6 @@ jobs:
               private fun clickAnswer(answer: String, result: MethodChannel.Result) {
                   val service = AutoClickService.instance
                   if (service != null) {
-                      // 简化处理，实际需定位选项位置
                       result.success(true)
                   } else {
                       result.error("SERVICE_NOT_READY", "无障碍服务未启动", null)
@@ -148,7 +146,7 @@ jobs:
           }
           EOF
           
-          # 7. 写入 AutoClickService.kt
+          # 8. 写入 AutoClickService.kt
           cat > android/app/src/main/kotlin/com/example/auto_quiz/AutoClickService.kt << 'EOF'
           package com.example.auto_quiz
           
@@ -197,7 +195,7 @@ jobs:
           }
           EOF
           
-          # 8. 写入完整 AndroidManifest.xml
+          # 9. 写入 AndroidManifest.xml
           cat > android/app/src/main/AndroidManifest.xml << 'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
@@ -248,7 +246,7 @@ jobs:
           </manifest>
           EOF
           
-          # 9. 写入完整的 lib/main.dart
+          # 10. 写入 lib/main.dart
           cat > lib/main.dart << 'EOF'
           import 'dart:convert';
           import 'dart:io';
@@ -515,14 +513,21 @@ jobs:
           }
           EOF
       
-      - name: Add http dependency
+      - name: Add http dependency to pubspec.yaml
         run: |
+          # 使用 sed 在 dependencies: 后添加 http 依赖
           sed -i '/dependencies:/a\  http: ^1.1.0' pubspec.yaml
       
-      - name: Add ML Kit dependency
+      - name: Add ML Kit dependency to build.gradle.kts
         run: |
-          sed -i '/dependencies {/a\    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")' android/app/build.gradle.kts
-
+          # 确保 build.gradle.kts 存在，然后追加依赖
+          if [ -f android/app/build.gradle.kts ]; then
+            sed -i '/dependencies {/a\    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")' android/app/build.gradle.kts
+          else
+            echo "ERROR: android/app/build.gradle.kts not found"
+            exit 1
+          fi
+      
       - name: Update dependencies and build
         run: |
           flutter pub get
