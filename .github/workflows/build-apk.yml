@@ -41,6 +41,15 @@ jobs:
               android:description="@string/app_name" />
           EOF
           
+          # ⭐ 新增：创建 strings.xml 定义 app_name
+          mkdir -p android/app/src/main/res/values
+          cat > android/app/src/main/res/values/strings.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Auto Quiz</string>
+          </resources>
+          EOF
+          
           # 创建 kotlin 源码目录
           mkdir -p android/app/src/main/kotlin/com/example/auto_quiz
           
@@ -100,7 +109,6 @@ jobs:
           }
           EOF
       
-      # ⭐ 方法升级：直接覆盖 AndroidManifest.xml，而不是用 sed 打补丁
       - name: Override AndroidManifest.xml
         run: |
           cat > android/app/src/main/AndroidManifest.xml << 'EOF'
