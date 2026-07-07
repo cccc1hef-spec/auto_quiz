@@ -24,11 +24,15 @@ jobs:
           cp -r /tmp/backup/lib .
           cp /tmp/backup/pubspec.yaml .
       
+      # ⭐ 新增：修改应用显示名称（在生成 Android 项目后、构建前）
+      - name: Change app name
+        run: |
+          sed -i 's/android:label="auto_quiz"/android:label="Auto Quiz"/g' android/app/src/main/AndroidManifest.xml
+      
       - run: flutter pub get
       
       - run: flutter build apk --debug
       
-      # ⭐ 关键：上传 APK 到 Artifacts
       - uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
