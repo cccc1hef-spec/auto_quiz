@@ -18,18 +18,18 @@ jobs:
       
       - name: Generate full Flutter project with all native code
         run: |
-          # 1. 创建临时备份
+          # 1. 备份现有 lib 和 pubspec（如果有）
           mkdir -p /tmp/backup
           cp -r lib pubspec.yaml /tmp/backup/ 2>/dev/null || true
           
-          # 2. 用 flutter create 生成基础结构
+          # 2. 生成基础 Flutter 项目
           flutter create --org com.example .
           
-          # 3. 恢复 lib 和 pubspec.yaml（如果存在）
+          # 3. 恢复备份（如果有）
           [ -d /tmp/backup/lib ] && cp -r /tmp/backup/lib .
           [ -f /tmp/backup/pubspec.yaml ] && cp /tmp/backup/pubspec.yaml .
           
-          # 4. 创建缺失的资源文件
+          # 4. 创建资源文件
           mkdir -p android/app/src/main/res/values
           cat > android/app/src/main/res/values/strings.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -53,13 +53,14 @@ jobs:
           # 5. 创建 Kotlin 源码目录
           mkdir -p android/app/src/main/kotlin/com/example/auto_quiz
           
-          # 6. 写入 MainActivity.kt（含 MethodChannel 实现）
+          # 6. 写入 MainActivity.kt（修正：使用 Uri.fromFile，导入 android.net.Uri）
           cat > android/app/src/main/kotlin/com/example/auto_quiz/MainActivity.kt << 'EOF'
           package com.example.auto_quiz
           
           import android.content.Context
           import android.content.Intent
           import android.media.projection.MediaProjectionManager
+          import android.net.Uri
           import android.os.Build
           import android.os.Bundle
           import android.os.Environment
@@ -72,7 +73,6 @@ jobs:
           import io.flutter.embedding.engine.FlutterEngine
           import io.flutter.plugin.common.MethodChannel
           import java.io.File
-          import java.io.FileOutputStream
           
           class MainActivity : FlutterActivity() {
               private val CHANNEL = "com.example.auto_quiz/main"
@@ -85,24 +85,14 @@ jobs:
                   MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
                       .setMethodCallHandler { call, result ->
                           when (call.method) {
-                              "captureScreen" -> {
-                                  captureScreen(result)
-                              }
+                              "captureScreen" -> captureScreen(result)
                               "performOCR" -> {
                                   val path = call.argument<String>("path")
-                                  if (path != null) {
-                                      performOCR(path, result)
-                                  } else {
-                                      result.error("INVALID_ARG", "No path provided", null)
-                                  }
+                                  if (path != null) performOCR(path, result) else result.error("INVALID_ARG", "No path", null)
                               }
                               "clickAnswer" -> {
                                   val answer = call.argument<String>("answer")
-                                  if (answer != null) {
-                                      clickAnswer(answer, result)
-                                  } else {
-                                      result.error("INVALID_ARG", "No answer provided", null)
-                                  }
+                                  if (answer != null) clickAnswer(answer, result) else result.error("INVALID_ARG", "No answer", null)
                               }
                               else -> result.notImplemented()
                           }
@@ -113,8 +103,7 @@ jobs:
                   mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                   val intent = mediaProjectionManager.createScreenCaptureIntent()
                   startActivityForResult(intent, REQUEST_CODE_CAPTURE)
-                  // 这里简化处理，实际需要保存MediaProjection并在回调中截图
-                  // 由于实现复杂，返回占位路径
+                  // 暂存占位路径（实际需要完整截图实现）
                   val path = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
                       ?.absolutePath + "/screenshot.png"
                   result.success(path)
@@ -123,14 +112,14 @@ jobs:
               @RequiresApi(Build.VERSION_CODES.KITKAT)
               private fun performOCR(imagePath: String, result: MethodChannel.Result) {
                   try {
-                      val image = InputImage.fromFilePath(this, File(imagePath).toUri())
+                      val uri = Uri.fromFile(File(imagePath))
+                      val image = InputImage.fromFilePath(this, uri)
                       val recognizer = TextRecognition.getClient(
                           ChineseTextRecognizerOptions.Builder().build()
                       )
                       recognizer.process(image)
                           .addOnSuccessListener { visionText ->
-                              val text = visionText.text
-                              result.success(text)
+                              result.success(visionText.text)
                           }
                           .addOnFailureListener { e ->
                               result.error("OCR_FAILED", e.message, null)
@@ -141,11 +130,9 @@ jobs:
               }
           
               private fun clickAnswer(answer: String, result: MethodChannel.Result) {
-                  // 通过无障碍服务模拟点击
                   val service = AutoClickService.instance
                   if (service != null) {
-                      // 根据答案字母找到对应选项位置并点击（简化）
-                      // 实际需要解析屏幕元素，这里留空
+                      // 简化处理，实际需定位选项位置
                       result.success(true)
                   } else {
                       result.error("SERVICE_NOT_READY", "无障碍服务未启动", null)
@@ -173,20 +160,15 @@ jobs:
           import android.view.accessibility.AccessibilityNodeInfo
           
           class AutoClickService : AccessibilityService() {
-          
               companion object {
                   var instance: AutoClickService? = null
               }
-          
               override fun onServiceConnected() {
                   super.onServiceConnected()
                   instance = this
               }
-          
               override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
-          
               override fun onInterrupt() {}
-          
               fun performClick(x: Float, y: Float) {
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                       val path = Path()
@@ -197,7 +179,6 @@ jobs:
                       dispatchGesture(builder.build(), null, null)
                   }
               }
-          
               fun clickButtonByText(text: String): Boolean {
                   val root = rootInActiveWindow ?: return false
                   val nodes = root.findAccessibilityNodeInfosByText(text)
@@ -209,7 +190,6 @@ jobs:
                   }
                   return false
               }
-          
               override fun onDestroy() {
                   instance = null
                   super.onDestroy()
@@ -217,10 +197,9 @@ jobs:
           }
           EOF
           
-          # 8. 写入完整 AndroidManifest.xml（包含权限和服务）
+          # 8. 写入完整 AndroidManifest.xml
           cat > android/app/src/main/AndroidManifest.xml << 'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-          
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
@@ -269,7 +248,7 @@ jobs:
           </manifest>
           EOF
           
-          # 9. 写入完整的 lib/main.dart（含悬浮窗、API配置、非密码模式）
+          # 9. 写入完整的 lib/main.dart
           cat > lib/main.dart << 'EOF'
           import 'dart:convert';
           import 'dart:io';
@@ -327,9 +306,7 @@ jobs:
                   top: 100,
                   right: 10,
                   child: GestureDetector(
-                    onPanUpdate: (details) {
-                      // 移动悬浮窗（简化版）
-                    },
+                    onPanUpdate: (details) {},
                     child: Material(
                       color: Colors.transparent,
                       child: Container(
@@ -391,18 +368,14 @@ jobs:
                 _status = '正在截屏...';
               });
               try {
-                // 1. 截屏
                 final path = await platform.invokeMethod('captureScreen') as String?;
                 if (path == null) throw Exception('截屏失败');
-                // 2. OCR
                 setState(() => _status = '识别题目...');
                 final ocrText = await platform.invokeMethod('performOCR', {'path': path}) as String?;
                 if (ocrText == null || ocrText.isEmpty) throw Exception('未识别到文字');
-                // 3. 调用API
                 setState(() => _status = '获取答案...');
                 final answer = await _getAnswer(ocrText);
                 if (answer.isEmpty) throw Exception('未获取答案');
-                // 4. 点击
                 setState(() => _status = '点击答案...');
                 await platform.invokeMethod('clickAnswer', {'answer': answer});
                 setState(() {
@@ -509,7 +482,6 @@ jobs:
                           labelText: 'API Key',
                           hintText: '粘贴你的 Key',
                           border: OutlineInputBorder(),
-                          // 不设置 obscureText 以便复制粘贴
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -546,6 +518,10 @@ jobs:
       - name: Add http dependency
         run: |
           sed -i '/dependencies:/a\  http: ^1.1.0' pubspec.yaml
+      
+      - name: Add ML Kit dependency
+        run: |
+          sed -i '/dependencies {/a\    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")' android/app/build.gradle.kts
 
       - name: Update dependencies and build
         run: |
