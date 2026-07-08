@@ -16,23 +16,23 @@ jobs:
           flutter-version: '3.24.0'
           channel: 'stable'
 
-      - name: Generate Flutter project and overwrite Gradle files
+      - name: Generate Flutter project and add native code
         run: |
-          # 备份现有 lib 和 pubspec
+          # 1. 备份现有 lib 和 pubspec（如果有）
           mkdir -p /tmp/backup
           cp -r lib pubspec.yaml /tmp/backup/ 2>/dev/null || true
 
-          # 生成基础项目
+          # 2. 生成基础 Flutter 项目（使用默认 Gradle 配置）
           flutter create --org com.example .
 
-          # 恢复备份
+          # 3. 恢复备份
           [ -d /tmp/backup/lib ] && cp -r /tmp/backup/lib .
           [ -f /tmp/backup/pubspec.yaml ] && cp /tmp/backup/pubspec.yaml .
 
-          # 添加 http 依赖
+          # 4. 添加 http 依赖（如果尚未添加）
           grep -q "http:" pubspec.yaml || sed -i '/dependencies:/a\  http: ^1.1.0' pubspec.yaml
 
-          # 创建资源文件
+          # 5. 创建资源文件（strings.xml）
           mkdir -p android/app/src/main/res/values
           cat > android/app/src/main/res/values/strings.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -41,6 +41,7 @@ jobs:
           </resources>
           EOF
 
+          # 6. 创建无障碍服务配置文件
           mkdir -p android/app/src/main/res/xml
           cat > android/app/src/main/res/xml/accessibility_service_config.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -53,10 +54,10 @@ jobs:
               android:description="@string/app_name" />
           EOF
 
-          # 创建 Kotlin 源码目录
+          # 7. 创建 Kotlin 源码目录
           mkdir -p android/app/src/main/kotlin/com/example/auto_quiz
 
-          # 写入 MainActivity.kt（同前，不变）
+          # 8. 写入 MainActivity.kt
           cat > android/app/src/main/kotlin/com/example/auto_quiz/MainActivity.kt << 'EOF'
           package com.example.auto_quiz
 
@@ -148,7 +149,7 @@ jobs:
           }
           EOF
 
-          # 写入 AutoClickService.kt
+          # 9. 写入 AutoClickService.kt
           cat > android/app/src/main/kotlin/com/example/auto_quiz/AutoClickService.kt << 'EOF'
           package com.example.auto_quiz
 
@@ -197,7 +198,7 @@ jobs:
           }
           EOF
 
-          # 写入 AndroidManifest.xml
+          # 10. 直接覆盖 AndroidManifest.xml（包含权限和服务声明，内容简单）
           cat > android/app/src/main/AndroidManifest.xml << 'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="com.example.auto_quiz">
@@ -249,7 +250,13 @@ jobs:
           </manifest>
           EOF
 
-          # 写入 lib/main.dart（完整功能版）
+          # 11. 修改 app/build.gradle（仅添加 namespace 和 ML Kit，保留其他默认配置）
+          # 在 android { 后插入 namespace
+          sed -i '/android {/a\    namespace "com.example.auto_quiz"' android/app/build.gradle
+          # 在 dependencies { 后插入 ML Kit
+          sed -i '/dependencies {/a\    implementation "com.google.mlkit:text-recognition-chinese:16.0.1"' android/app/build.gradle
+
+          # 12. 写入完整的 lib/main.dart（完整功能版）
           cat > lib/main.dart << 'EOF'
           import 'dart:convert';
           import 'dart:io';
@@ -513,112 +520,6 @@ jobs:
                 ),
               );
             }
-          }
-          EOF
-
-          # 覆盖根 build.gradle（明确 kotlin_version 和仓库）
-          cat > android/build.gradle << 'EOF'
-          buildscript {
-              ext.kotlin_version = '1.9.0'
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-
-              dependencies {
-                  classpath 'com.android.tools.build:gradle:7.3.0'
-                  classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
-              }
-          }
-
-          allprojects {
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-          }
-
-          rootProject.buildDir = '../build'
-          subprojects {
-              project.buildDir = "${rootProject.buildDir}/${project.name}"
-          }
-          subprojects {
-              project.evaluationDependsOn(':app')
-          }
-
-          tasks.register('clean', Delete) {
-              delete rootProject.buildDir
-          }
-          EOF
-
-          # 覆盖 app/build.gradle（含 namespace, compileSdk 34, ML Kit）
-          cat > android/app/build.gradle << 'EOF'
-          def localProperties = new Properties()
-          def localPropertiesFile = rootProject.file('local.properties')
-          if (localPropertiesFile.exists()) {
-              localPropertiesFile.withReader('UTF-8') { reader ->
-                  localProperties.load(reader)
-              }
-          }
-
-          def flutterRoot = localProperties.getProperty('flutter.sdk')
-          if (flutterRoot == null) {
-              throw new GradleException("Flutter SDK not found. Define location with flutter.sdk in the local.properties file.")
-          }
-
-          def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
-          if (flutterVersionCode == null) {
-              flutterVersionCode = '1'
-          }
-
-          def flutterVersionName = localProperties.getProperty('flutter.versionName')
-          if (flutterVersionName == null) {
-              flutterVersionName = '1.0'
-          }
-
-          apply plugin: 'com.android.application'
-          apply plugin: 'kotlin-android'
-          apply from: "$flutterRoot/packages/flutter_tools/gradle/flutter.gradle"
-
-          android {
-              namespace 'com.example.auto_quiz'
-              compileSdk 34
-
-              compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_1_8
-                  targetCompatibility JavaVersion.VERSION_1_8
-              }
-
-              kotlinOptions {
-                  jvmTarget = '1.8'
-              }
-
-              sourceSets {
-                  main.java.srcDirs += 'src/main/kotlin'
-              }
-
-              defaultConfig {
-                  applicationId "com.example.auto_quiz"
-                  minSdk 21
-                  targetSdk 34
-                  versionCode flutterVersionCode.toInteger()
-                  versionName flutterVersionName
-              }
-
-              buildTypes {
-                  release {
-                      signingConfig signingConfigs.debug
-                  }
-              }
-          }
-
-          flutter {
-              source '../..'
-          }
-
-          dependencies {
-              implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
-              implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
           }
           EOF
 
